@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Rhythm Learning Complete</title>
+<script src="https://unpkg.com/vexflow/releases/vexflow-min.js"></script>
+<style>
+body{
+  background:#111;
+  color:white;
+  text-align:center;
+  font-family:sans-serif;
+}
+#notation{ position:relative; margin:auto; width:900px;}
+#cursor{
+  position:absolute;
+  top:0;
+  width:2px;
+  height:200px;
+  background:lime;
+}
+#countdown{
+  font-size:48px;
+  margin-top:20px;
+}
+.pass{ color:lime; }
+.fail{ color:red; }
+canvas{ background:#222; margin-top:15px;}
+</style>
+</head>
+<body>
+
+<h1>Rhythm Learning Complete</h1>
+<div>Level: <span id="level">1</span></div>
+
+<label>BPM: <span id="bpmVal">100</span></label><br>
+<input type="range" id="bpm" min="40" max="200" value="100">
+
+<div id="countdown"></div>
+<div id="notation"></div>
+<div id="result"></div>
+<canvas id="graph" width="900" height="150"></canvas>
+
+<script>
+const VF = Vex.Flow;
+let bpm=100;
+let level=1;
+let passThreshold=0.8;
+
+const durationMap={
+  "q":1,"8":0.5,"16":0.25,
+  "qr":1,"8r":0.5,"16r":0.25
+};
+
+let rhythm=[];
+let noteTimes=[];
+let currentNote=0;
+let score=0;
+let maxScore=0;
+let offsets=[];
+let startTime;
+const audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+const graph=document.getElementById("graph");
+const gctx=graph.getContext("2d");
+
+document.getElementById("bpm").oninput=e=>{
+  bpm=e.target.value;
+  document.getElementById("bpmVal").textContent=bpm;
+};
+
+function allowedNotes(){
+  if(level===1) return ["q"];
+  if(level===2) return ["q","8"];
+  if(level===3) return ["q","8","16"];
+  return ["q","8","16","qr","8r","16r"];
+}
+
+function generateRhythm(){
+  rhythm=[];
+  const allowed=allowedNotes();
+  for(let m=0;m<4;m++){
+    let beats=0;
+    while(beats<4){
+      let candidates=allowed.filter(n=>beats+durationMap[n]<=4);
+      let note=candidates[Math.floor(Math.random()*candidates.length)];
+      rhythm.push(note);
+      beats+=durationMap[note];
+    }
+  }
+}
+
+function drawNotation(){
+  document.getElementById("notation").innerHTML="";
+  const div=document.getElementById("notation");
+  const renderer=new VF.Renderer(div,VF.Renderer.Backends.SVG);
+  renderer.resize(900,200);
+  const context=renderer.getContext();
+  const stave=new VF.Stave(10,40,880);
+  stave.addClef("percussion").addTimeSignature("4/4");
+  stave.setContext(context).draw();
+
+  const notes=rhythm.map(r=>
+    new VF.StaveNote({keys:["b/4"],duration:r})
+  );
+
+  const voice=new VF.Voice({num_beats:16,beat_value:4});
+  voice.addTickables(notes);
+  new VF.Formatter().joinVoices([voice]).format([voice],800);
+  voice.draw(context,stave);
+}
+
+function calculateTimes(){
+  noteTimes=[];
+  let t=0;
+  let beatTime=60/bpm;
+  rhythm.forEach(r=>{
+    noteTimes.push(t);
+    t+=durationMap[r]*beatTime;
+  });
+}
+
+function playClick(freq=800){
+  const osc=audioCtx.createOscillator();
+  const gain=audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.frequency.value=freq;
+  osc.start();
+  gain.gain.setValueAtTime(1,audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.05);
+  osc.stop(audioCtx.currentTime+0.05);
+}
+
+function countdownAndStart(){
+  let count=3;
+  const cd=document.getElementById("countdown");
+  cd.textContent=count;
+
+  let interval=setInterval(()=>{
+    playClick(1000);
+    count--;
+    if(count>0){
+      cd.textContent=count;
+    }else{
+      clearInterval(interval);
+      cd.textContent="START!";
+      setTimeout(()=>{
+        cd.textContent="";
+        startPlay();
+      },500);
+    }
+  },1000);
+}
+
+function startPlay(){
+  calculateTimes();
+  startTime=audioCtx.currentTime;
+  currentNote=0;
+  score=0;
+  offsets=[];
+  maxScore=rhythm.filter(r=>!r.includes("r")).length*2;
+  moveCursor();
+}
+
+function moveCursor(){
+  const cursor=document.createElement("div");
+  cursor.id="cursor";
+  document.getElementById("notation").appendChild(cursor);
+
+  let beatTime=60/bpm;
+  let duration=16*beatTime;
+  let start=performance.now();
+
+  function anim(){
+    let p=(performance.now()-start)/1000/duration;
+    cursor.style.left=(p*880+10)+"px";
+    if(p<1) requestAnimationFrame(anim);
+  }
+  anim();
+}
+
+function drawGraph(){
+  gctx.clearRect(0,0,900,150);
+  gctx.strokeStyle="white";
+  gctx.beginPath();
+  gctx.moveTo(0,75);
+  gctx.lineTo(900,75);
+  gctx.stroke();
+
+  offsets.forEach((o,i)=>{
+    let x=(i/offsets.length)*900;
+    let y=75-o*300;
+    gctx.fillStyle=o>0?"cyan":"orange";
+    gctx.fillRect(x,y,4,4);
+  });
+}
+
+document.addEventListener("keydown",e=>{
+  if(e.code!=="Space") return;
+  if(currentNote>=rhythm.length) return;
+
+  if(rhythm[currentNote].includes("r")){
+    currentNote++;
+    return;
+  }
+
+  let now=audioCtx.currentTime;
+  let target=startTime+noteTimes[currentNote];
+  let diff=now-target;
+  offsets.push(diff);
+
+  let abs=Math.abs(diff);
+  if(abs<0.07) score+=2;
+  else if(abs<0.15) score+=1;
+
+  currentNote++;
+
+  if(currentNote>=rhythm.length){
+    finishMatch();
+  }
+});
+
+function finishMatch(){
+  let percent=score/maxScore;
+  let result=document.getElementById("result");
+
+  if(percent>=passThreshold){
+    result.textContent="PASS! "+Math.round(percent*100)+"%";
+    result.className="pass";
+    level++;
+  }else{
+    result.textContent="RETRY "+Math.round(percent*100)+"%";
+    result.className="fail";
+  }
+
+  document.getElementById("level").textContent=level;
+  drawGraph();
+  setTimeout(startMatch,4000);
+}
+
+function startMatch(){
+  generateRhythm();
+  drawNotation();
+  countdownAndStart();
+}
+
+startMatch();
+</script>
+</body>
+</html>
